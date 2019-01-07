@@ -42,12 +42,14 @@ type Client struct {
 	// Buffered channel of outbound messages.
 	send chan *Message
 
+	hub *hub
+
 	wg sync.WaitGroup
 }
 
 func (c *Client) runRead() {
 	defer func() {
-		//c.hub.unregister <- c
+		c.hub.unregister <- c
 		c.conn.Close()
 	}()
 	c.conn.SetReadLimit(maxMessageSize)
@@ -61,6 +63,7 @@ func (c *Client) runRead() {
 		}
 
 		fmt.Print(message)
+
 		//c.hub.broadcast <- message
 	}
 }
@@ -105,7 +108,7 @@ func (c *Client) WaitClosed() {
 	c.wg.Wait()
 }
 
-func NewClient(w http.ResponseWriter, r *http.Request) *Client {
+func NewClient(w http.ResponseWriter, r *http.Request, h *hub) *Client {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		logrus.WithError(errors.WithStack(err)).Error("upgrade failed")
@@ -113,12 +116,15 @@ func NewClient(w http.ResponseWriter, r *http.Request) *Client {
 	result := &Client{
 		conn: conn,
 		send: make(chan *Message, clientOutgoingChannelSize),
+		hub:  h,
 	}
 
 	result.wg.Add(1)
 	go result.runRead()
 	result.wg.Add(1)
 	go result.runWrite()
+
+	result.hub.register <- result
 
 	return result
 }
