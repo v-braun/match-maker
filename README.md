@@ -1,5 +1,5 @@
 # match-maker
-> 
+> Simple websockets match making server for games
 
 By [v-braun - viktor-braun.de](https://viktor-braun.de).
 
@@ -13,7 +13,8 @@ By [v-braun - viktor-braun.de](https://viktor-braun.de).
 </p>
 
 
-## Description
+## Description  
+TODO
 
 
 ## Installation
