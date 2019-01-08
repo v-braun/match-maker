@@ -1,9 +1,7 @@
 package main
 
 import (
-	"fmt"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/pkg/errors"
@@ -44,7 +42,7 @@ type Client struct {
 
 	hub *hub
 
-	wg sync.WaitGroup
+	currentMatch *Match
 }
 
 func (c *Client) runRead() {
@@ -54,7 +52,11 @@ func (c *Client) runRead() {
 	}()
 	c.conn.SetReadLimit(maxMessageSize)
 	c.conn.SetReadDeadline(time.Now().Add(pongWait))
-	c.conn.SetPongHandler(func(string) error { c.conn.SetReadDeadline(time.Now().Add(pongWait)); return nil })
+	c.conn.SetPongHandler(func(string) error {
+		c.conn.SetReadDeadline(time.Now().Add(pongWait))
+		return nil
+	})
+
 	for {
 		_, message, err := c.conn.ReadMessage()
 		if err != nil {
@@ -62,9 +64,7 @@ func (c *Client) runRead() {
 			return
 		}
 
-		fmt.Print(message)
-
-		//c.hub.broadcast <- message
+		c.hub.clientMessage <- NewMessage(c, message)
 	}
 }
 func (c *Client) runWrite() {
@@ -72,7 +72,6 @@ func (c *Client) runWrite() {
 	defer func() {
 		c.conn.Close()
 		ping.Stop()
-		c.wg.Done()
 	}()
 
 	for {
@@ -87,7 +86,10 @@ func (c *Client) runWrite() {
 
 			w, err := c.conn.NextWriter(websocket.BinaryMessage)
 			if err != nil {
-				logrus.WithError(errors.WithStack(err)).Error("failed create writer")
+				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+					logrus.WithError(errors.WithStack(err)).Error("failed create writer")
+				}
+
 				return
 			}
 
@@ -104,10 +106,6 @@ func (c *Client) runWrite() {
 	}
 }
 
-func (c *Client) WaitClosed() {
-	c.wg.Wait()
-}
-
 func NewClient(w http.ResponseWriter, r *http.Request, h *hub) *Client {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -119,9 +117,7 @@ func NewClient(w http.ResponseWriter, r *http.Request, h *hub) *Client {
 		hub:  h,
 	}
 
-	result.wg.Add(1)
 	go result.runRead()
-	result.wg.Add(1)
 	go result.runWrite()
 
 	result.hub.register <- result

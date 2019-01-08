@@ -13,7 +13,16 @@ type hub struct {
 	// unregister client in the hub
 	unregister chan *Client
 
-	end chan interface{}
+	// client search for a match
+	enterMatch chan *Client
+
+	// client leaves a match
+	leaveMatch chan *Client
+
+	// a message was send in a match
+	matchMessage chan *Message
+
+	pendingMatch *Match
 }
 
 func startHub() *hub {
@@ -22,39 +31,75 @@ func startHub() *hub {
 		unregister:    make(chan *Client),
 		register:      make(chan *Client),
 		clients:       make(map[*Client]bool),
+		enterMatch:    make(chan *Client),
+		leaveMatch:    make(chan *Client),
+		matchMessage:  make(chan *Message),
 	}
 
-	go h.run()
+	go h.runClientIO()
+	go h.runMatchMaking()
 
 	return h
 }
 
-func (h *hub) run() {
+func (h *hub) runMatchMaking() {
+	for {
+		select {
+		case client := <-h.enterMatch:
+			if h.pendingMatch == nil {
+				// if no match, just create new and add client
+				h.pendingMatch = NewMatch(client)
+			} else if !h.pendingMatch.addClient(client) {
+				// if client could not be added to match
+				// new match and add client
+				h.pendingMatch = NewMatch(client)
+			}
+		case client := <-h.leaveMatch:
+			// if the match is ended (no players) and the pending match is that actual
+			// set pending to nil
+			if match := client.currentMatch; match != nil && match.removeClient(client) && h.pendingMatch == match {
+				h.pendingMatch = nil
+			}
+		case msg := <-h.matchMessage:
+			if match := msg.sender.currentMatch; match != nil {
+				match.clientMessage(msg)
+			}
+		}
+
+	}
+}
+
+func (h *hub) runClientIO() {
 	for {
 		select {
 		case client := <-h.register:
 			h.clients[client] = true
 		case client := <-h.unregister:
 			if _, ok := h.clients[client]; ok {
-				delete(h.clients, client)
-				close(client.send)
+				h.deleteClient(client)
 			}
-		case <-h.end:
-			h.disconnectClients()
 		case message := <-h.clientMessage:
-			h.handleClientMessage(message)
+			go h.handleClientMessage(message)
 		}
 	}
 }
 
 func (h *hub) handleClientMessage(msg *Message) {
-
+	c := msg.sender
+	switch msg.msgType {
+	case WantMatchMaking:
+		h.enterMatch <- c
+	case MatchMessage:
+		//handleMatchMessage(msg)
+	case WantLeaveMatch:
+		h.leaveMatch <- c
+	}
 }
 
-func (h *hub) disconnectClients() {
-	for client := range h.clients {
-		close(client.send)
-		client.WaitClosed()
-		delete(h.clients, client)
+func (h *hub) deleteClient(client *Client) {
+	delete(h.clients, client)
+	close(client.send)
+	if client.currentMatch != nil {
+		h.leaveMatch <- client
 	}
 }
