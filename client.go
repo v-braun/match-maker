@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/pkg/errors"
@@ -32,7 +33,7 @@ var upgrader = websocket.Upgrader{
 }
 
 type Client struct {
-	//	hub *Hub
+	wg sync.WaitGroup
 
 	// The websocket connection.
 	conn *websocket.Conn
@@ -43,12 +44,14 @@ type Client struct {
 	hub *hub
 
 	currentMatch *Match
+
+	close chan interface{}
 }
 
 func (c *Client) runRead() {
 	defer func() {
-		c.hub.unregister <- c
 		c.conn.Close()
+		c.wg.Done()
 	}()
 	c.conn.SetReadLimit(maxMessageSize)
 	c.conn.SetReadDeadline(time.Now().Add(pongWait))
@@ -70,26 +73,18 @@ func (c *Client) runRead() {
 func (c *Client) runWrite() {
 	ping := time.NewTicker(pingPeriod)
 	defer func() {
-		c.conn.Close()
 		ping.Stop()
+		c.conn.Close()
+		c.wg.Done()
 	}()
 
 	for {
 		select {
-		case msg, ok := <-c.send:
+		case msg := <-c.send:
 			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
-			if !ok {
-				// client channel was closed
-				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return
-			}
-
 			w, err := c.conn.NextWriter(websocket.BinaryMessage)
 			if err != nil {
-				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-					logrus.WithError(errors.WithStack(err)).Error("failed create writer")
-				}
-
+				logrus.WithError(errors.WithStack(err)).Error("failed create writer")
 				return
 			}
 
@@ -102,23 +97,37 @@ func (c *Client) runWrite() {
 				logrus.WithError(errors.WithStack(err)).Error("failed write PingMessage")
 				return
 			}
+		case <-c.close:
+			c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+			return
 		}
 	}
 }
 
-func NewClient(w http.ResponseWriter, r *http.Request, h *hub) *Client {
+func (c *Client) runListenClean() {
+	c.wg.Wait()
+	c.hub.unregister <- c
+}
+
+func NewClient(w http.ResponseWriter, r *http.Request, close chan interface{}, h *hub) *Client {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		logrus.WithError(errors.WithStack(err)).Error("upgrade failed")
 	}
 	result := &Client{
-		conn: conn,
-		send: make(chan *Message, clientOutgoingChannelSize),
-		hub:  h,
+		conn:  conn,
+		send:  make(chan *Message, clientOutgoingChannelSize),
+		hub:   h,
+		close: close,
 	}
 
+	result.wg.Add(1)
 	go result.runRead()
+
+	result.wg.Add(1)
 	go result.runWrite()
+
+	go result.runListenClean()
 
 	result.hub.register <- result
 

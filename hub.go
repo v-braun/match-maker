@@ -1,6 +1,10 @@
 package main
 
+import "sync"
+
 type hub struct {
+	wg sync.WaitGroup
+
 	// Registered clients.
 	clients map[*Client]bool
 
@@ -70,13 +74,25 @@ func (h *hub) runMatchMaking() {
 }
 
 func (h *hub) runClientIO() {
+	defer func() {
+		close(h.leaveMatch)
+		close(h.enterMatch)
+		close(h.matchMessage)
+	}()
+
 	for {
 		select {
 		case client := <-h.register:
 			h.clients[client] = true
+			h.wg.Add(1)
 		case client := <-h.unregister:
 			if _, ok := h.clients[client]; ok {
-				h.deleteClient(client)
+				delete(h.clients, client)
+				close(client.send)
+				if client.currentMatch != nil {
+					h.leaveMatch <- client
+				}
+				h.wg.Done()
 			}
 		case message := <-h.clientMessage:
 			go h.handleClientMessage(message)
@@ -96,10 +112,6 @@ func (h *hub) handleClientMessage(msg *Message) {
 	}
 }
 
-func (h *hub) deleteClient(client *Client) {
-	delete(h.clients, client)
-	close(client.send)
-	if client.currentMatch != nil {
-		h.leaveMatch <- client
-	}
+func stop() {
+
 }
