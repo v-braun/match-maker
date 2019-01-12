@@ -32,23 +32,21 @@ var upgrader = websocket.Upgrader{
 	WriteBufferSize: 1024,
 }
 
-type Client struct {
+type client struct {
 	wg sync.WaitGroup
 
 	// The websocket connection.
 	conn *websocket.Conn
 
 	// Buffered channel of outbound messages.
-	send chan *Message
+	send chan *message
 
 	hub *hub
 
-	currentMatch *Match
-
-	close chan interface{}
+	currentMatch *match
 }
 
-func (c *Client) runRead() {
+func (c *client) runRead() {
 	defer func() {
 		c.conn.Close()
 		c.wg.Done()
@@ -67,10 +65,10 @@ func (c *Client) runRead() {
 			return
 		}
 
-		c.hub.clientMessage <- NewMessage(c, message)
+		c.hub.clientMessage <- newMessage(c, message)
 	}
 }
-func (c *Client) runWrite() {
+func (c *client) runWrite() {
 	ping := time.NewTicker(pingPeriod)
 	defer func() {
 		ping.Stop()
@@ -97,28 +95,27 @@ func (c *Client) runWrite() {
 				logrus.WithError(errors.WithStack(err)).Error("failed write PingMessage")
 				return
 			}
-		case <-c.close:
+		case <-c.hub.close:
 			c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 			return
 		}
 	}
 }
 
-func (c *Client) runListenClean() {
+func (c *client) runListenClean() {
 	c.wg.Wait()
 	c.hub.unregister <- c
 }
 
-func NewClient(w http.ResponseWriter, r *http.Request, close chan interface{}, h *hub) *Client {
+func newClient(w http.ResponseWriter, r *http.Request, h *hub) *client {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		logrus.WithError(errors.WithStack(err)).Error("upgrade failed")
 	}
-	result := &Client{
-		conn:  conn,
-		send:  make(chan *Message, clientOutgoingChannelSize),
-		hub:   h,
-		close: close,
+	result := &client{
+		conn: conn,
+		send: make(chan *message, clientOutgoingChannelSize),
+		hub:  h,
 	}
 
 	result.wg.Add(1)

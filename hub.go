@@ -6,79 +6,36 @@ type hub struct {
 	wg sync.WaitGroup
 
 	// Registered clients.
-	clients map[*Client]bool
+	clients map[*client]bool
 
 	// Inbound messages from the clients.
-	clientMessage chan *Message
+	clientMessage chan *message
 
 	// register new client in the hub
-	register chan *Client
+	register chan *client
 
 	// unregister client in the hub
-	unregister chan *Client
+	unregister chan *client
 
-	// client search for a match
-	enterMatch chan *Client
+	pendingMatch *match
 
-	// client leaves a match
-	leaveMatch chan *Client
-
-	// a message was send in a match
-	matchMessage chan *Message
-
-	pendingMatch *Match
+	close chan interface{}
 }
 
 func startHub() *hub {
 	h := &hub{
-		clientMessage: make(chan *Message),
-		unregister:    make(chan *Client),
-		register:      make(chan *Client),
-		clients:       make(map[*Client]bool),
-		enterMatch:    make(chan *Client),
-		leaveMatch:    make(chan *Client),
-		matchMessage:  make(chan *Message),
+		clientMessage: make(chan *message),
+		unregister:    make(chan *client),
+		register:      make(chan *client),
+		clients:       make(map[*client]bool),
 	}
 
 	go h.runClientIO()
-	go h.runMatchMaking()
 
 	return h
 }
 
-func (h *hub) runMatchMaking() {
-	for {
-		select {
-		case client := <-h.enterMatch:
-			if h.pendingMatch == nil {
-				// if no match, just create new and add client
-				h.pendingMatch = NewMatch(client)
-			} else if !h.pendingMatch.addClient(client) {
-				// if client could not be added to match
-				// new match and add client
-				h.pendingMatch = NewMatch(client)
-			}
-		case client := <-h.leaveMatch:
-			// if the match is ended (no players) and the pending match is that actual
-			// set pending to nil
-			if match := client.currentMatch; match != nil && match.removeClient(client) && h.pendingMatch == match {
-				h.pendingMatch = nil
-			}
-		case msg := <-h.matchMessage:
-			if match := msg.sender.currentMatch; match != nil {
-				match.clientMessage(msg)
-			}
-		}
-
-	}
-}
-
 func (h *hub) runClientIO() {
-	defer func() {
-		close(h.leaveMatch)
-		close(h.enterMatch)
-		close(h.matchMessage)
-	}()
 
 	for {
 		select {
@@ -88,30 +45,38 @@ func (h *hub) runClientIO() {
 		case client := <-h.unregister:
 			if _, ok := h.clients[client]; ok {
 				delete(h.clients, client)
-				close(client.send)
-				if client.currentMatch != nil {
-					h.leaveMatch <- client
+				match := client.currentMatch
+				if match != nil {
+					match.removeClient(client)
 				}
 				h.wg.Done()
 			}
 		case message := <-h.clientMessage:
-			go h.handleClientMessage(message)
+			if message.msgType == wantMatchMaking {
+				if h.pendingMatch == nil {
+					// if no match, just create new and add client
+					h.pendingMatch = newMatch(message.sender)
+				} else if !h.pendingMatch.addClient(message.sender) {
+					// if client could not be added to match
+					// new match and add client
+					h.pendingMatch = newMatch(message.sender)
+				}
+			}
+
+			match := message.sender.currentMatch
+			if match != nil {
+				match.clientMessage(message)
+			}
+		case <-h.close:
+			if len(h.clients) == 0 {
+				return
+			}
 		}
+
 	}
 }
 
-func (h *hub) handleClientMessage(msg *Message) {
-	c := msg.sender
-	switch msg.msgType {
-	case WantMatchMaking:
-		h.enterMatch <- c
-	case MatchMessage:
-		//handleMatchMessage(msg)
-	case WantLeaveMatch:
-		h.leaveMatch <- c
-	}
-}
-
-func stop() {
-
+func (h *hub) stop() {
+	close(h.close)
+	h.wg.Wait()
 }

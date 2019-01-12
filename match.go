@@ -2,22 +2,26 @@ package main
 
 import "sync"
 
-type Match struct {
+type match struct {
 	minClients int
 	maxClients int
-	clients    map[*Client]bool
+	clients    map[*client]bool
 	locker     sync.Locker
+	running    bool
+	hub        *hub
 }
 
-func NewMatch(client *Client) *Match {
-	result := &Match{
+func newMatch(c *client) *match {
+	result := &match{
 		minClients: 2,
 		maxClients: 2,
-		clients:    make(map[*Client]bool),
+		clients:    make(map[*client]bool),
 		locker:     &sync.Mutex{},
+		running:    false,
 	}
 
-	result.clients[client] = true
+	result.clients[c] = true
+	c.currentMatch = result
 
 	return result
 }
@@ -25,13 +29,14 @@ func NewMatch(client *Client) *Match {
 // adds client to match if still have space
 // if maxClients already reached  returns false and will not add the client
 // if maxClient is NOT reached and client was been added returns true
-func (m *Match) addClient(client *Client) bool {
+func (m *match) addClient(client *client) bool {
 	m.locker.Lock()
 	defer func() {
 		m.locker.Unlock()
 	}()
 
 	if m.maxClients == len(m.clients) {
+		m.running = true
 		return false
 	}
 
@@ -41,14 +46,29 @@ func (m *Match) addClient(client *Client) bool {
 	return true
 }
 
-func (m *Match) clientMessage(msg *Message) {
+func (m *match) clientMessage(msg *message) {
+	m.locker.Lock()
+	defer func() {
+		m.locker.Unlock()
+	}()
 
+	if !m.running {
+		return
+	}
+
+	for c := range m.clients {
+		if c != msg.sender {
+			go func() {
+				c.send <- msg
+			}()
+		}
+	}
 }
 
 // remove a client from match
 // if match is incomplete after remove returns true
 // otherwise returns false
-func (m *Match) removeClient(client *Client) bool {
+func (m *match) removeClient(client *client) bool {
 	m.locker.Lock()
 	defer func() {
 		m.locker.Unlock()
@@ -57,6 +77,7 @@ func (m *Match) removeClient(client *Client) bool {
 	delete(m.clients, client)
 	client.currentMatch = nil
 	if m.minClients > len(m.clients) {
+		m.running = false
 		return true
 	}
 

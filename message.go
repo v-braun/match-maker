@@ -2,26 +2,26 @@ package main
 
 import "encoding/binary"
 
-type MessageType uint32
+type messageType uint32
 
-const WantMatchMaking MessageType = 1
-const WantLeaveMatch MessageType = 3
+const wantMatchMaking messageType = 1
+const wantLeaveMatch messageType = 3
 
-const MatchMessage MessageType = 2
+const matchMessage messageType = 2
 
 //const LeaveMatch = 3
 
-type Message struct {
-	msgType MessageType
+type message struct {
+	msgType messageType
 	data    []byte
-	sender  *Client
+	sender  *client
 }
 
-func NewMessage(client *Client, data []byte) *Message {
-	t := MessageType(binary.BigEndian.Uint32(data))
+func newMessage(client *client, data []byte) *message {
+	t := messageType(binary.BigEndian.Uint32(data))
 	rest := data[4:]
 	sender := client
-	result := &Message{
+	result := &message{
 		msgType: t,
 		data:    rest,
 		sender:  sender,
@@ -30,7 +30,7 @@ func NewMessage(client *Client, data []byte) *Message {
 	return result
 }
 
-func (m *Message) toData() []byte {
+func (m *message) toData() []byte {
 	typeBuffer := make([]byte, 4)
 	binary.BigEndian.PutUint32(typeBuffer, uint32(m.msgType))
 
